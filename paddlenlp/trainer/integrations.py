@@ -13,18 +13,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This file is modified from 
+# This file is modified from
 #  https://github.com/huggingface/transformers/blob/main/src/transformers/integrations.py
 
 import importlib
 import json
 
-from .trainer_callback import ProgressCallback, TrainerCallback  # noqa: E402
-from .trainer_utils import PREFIX_CHECKPOINT_DIR, BestRun, IntervalStrategy  # noqa: E402
+from .trainer_callback import TrainerCallback
+from ..utils.log import logger
 
 
 def is_visualdl_available():
     return importlib.util.find_spec("visualdl") is not None
+
+
+def get_available_reporting_integrations():
+    integrations = []
+    if is_visualdl_available():
+        integrations.append("visualdl")
+
+    return integrations
 
 
 def rewrite_logs(d):
@@ -88,12 +96,13 @@ class VisualDLCallback(TrainerCallback):
                 model = kwargs["model"]
                 if hasattr(model,
                            "init_config") and model.init_config is not None:
-                    model_config_json = json.dumps(
-                        model.get_model_config(), ensure_ascii=False, indent=2)
+                    model_config_json = json.dumps(model.get_model_config(),
+                                                   ensure_ascii=False,
+                                                   indent=2)
                     self.vdl_writer.add_text("model_config", model_config_json)
             if hasattr(self.vdl_writer, "add_hparams"):
-                self.vdl_writer.add_hparams(
-                    args.to_sanitized_dict(), metrics_list=[])
+                self.vdl_writer.add_hparams(args.to_sanitized_dict(),
+                                            metrics_list=[])
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         if not state.is_world_process_zero:
@@ -121,7 +130,9 @@ class VisualDLCallback(TrainerCallback):
             self.vdl_writer = None
 
 
-INTEGRATION_TO_CALLBACK = {"visualdl": VisualDLCallback, }
+INTEGRATION_TO_CALLBACK = {
+    "visualdl": VisualDLCallback,
+}
 
 
 def get_reporting_integration_callbacks(report_to):

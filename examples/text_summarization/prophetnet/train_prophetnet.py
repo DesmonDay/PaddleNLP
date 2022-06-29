@@ -7,19 +7,21 @@ from tqdm import tqdm
 
 from paddlenlp.data import Pad, Tuple
 from paddlenlp.datasets import load_dataset
-from paddlenlp.transformers.prophetnet.modeling import ProphetNetForConditionalGeneration, ProphetNetModel
+from paddlenlp.transformers.prophetnet.modeling import ProphetNetForConditionalGeneration
 from paddlenlp.transformers.prophetnet.tokenizer import ProphetNetTokenizer
 
 parser = argparse.ArgumentParser()
 # Required parameters
-parser.add_argument(
-    "--dataset",
-    default="gigaword",
-    choices=["cnndm", "gigaword"],
-    type=str,
-    help="Path to tokenizer vocab file. ")
-parser.add_argument(
-    "--pretrained_model_path", default="./model_state.pdparams", type=str)
+parser.add_argument("--dataset",
+                    default="gigaword",
+                    choices=["cnndm", "gigaword"],
+                    type=str,
+                    help="Path to tokenizer vocab file. ")
+parser.add_argument("--model_name_or_path",
+                    default="prophetnet-large-uncased",
+                    type=str,
+                    required=True,
+                    help="Path to pre-trained model. ")
 parser.add_argument("--batch_size", default=24, type=int)
 parser.add_argument("--epochs", default=3, type=int)
 parser.add_argument("--lr", default=0.0001, type=float)
@@ -43,8 +45,8 @@ def read(data_path):
     assert src_lines_length == tgt_lines_length
     with open(data_path_src, 'r', encoding='utf-8') as f_d_s:
         with open(data_path_tgt, 'r', encoding='utf-8') as f_d_t:
-            for row_d_s, row_d_t in tqdm(
-                    zip(f_d_s, f_d_t), total=src_lines_length):
+            for row_d_s, row_d_t in tqdm(zip(f_d_s, f_d_t),
+                                         total=src_lines_length):
                 yield {'article': row_d_s, 'highlights': row_d_t}
 
 
@@ -54,16 +56,19 @@ train_data_tgt = 'data/' + args.dataset + '_data/uncased_tok_data/train.tgt'
 dev_data_src = 'data/' + args.dataset + '_data/uncased_tok_data/dev.src'
 dev_data_tgt = 'data/' + args.dataset + '_data/uncased_tok_data/dev.tgt'
 
-train_dataset = load_dataset(
-    read, data_path=[train_data_src, train_data_tgt], lazy=False)
+train_dataset = load_dataset(read,
+                             data_path=[train_data_src, train_data_tgt],
+                             lazy=False)
 
-dev_dataset = load_dataset(
-    read, data_path=[dev_data_src, dev_data_tgt], lazy=False)
+dev_dataset = load_dataset(read,
+                           data_path=[dev_data_src, dev_data_tgt],
+                           lazy=False)
 
-t = ProphetNetTokenizer(vocab_file="prophetnet.tokenizer")
+t = ProphetNetTokenizer.from_pretrained(args.model_name_or_path)
 
 
 class InverseSquareRootSchedule(paddle.optimizer.lr.LRScheduler):
+
     def __init__(self,
                  warmup_init_lr,
                  warmup_end_lr,
@@ -86,6 +91,7 @@ class InverseSquareRootSchedule(paddle.optimizer.lr.LRScheduler):
 
 
 def convert_example(is_test=False):
+
     def warpper(example):
         """convert an example into necessary features"""
         tokens = example['article']
@@ -126,21 +132,19 @@ batchify_fn = lambda samples, fn=Tuple(
 
 batch_size = args.batch_size
 
-train_data_loader = DataLoader(
-    dataset=train_dataset,
-    batch_size=batch_size,
-    shuffle=True,
-    collate_fn=batchify_fn,
-    use_shared_memory=False,
-    num_workers=args.num_workers)
+train_data_loader = DataLoader(dataset=train_dataset,
+                               batch_size=batch_size,
+                               shuffle=True,
+                               collate_fn=batchify_fn,
+                               use_shared_memory=False,
+                               num_workers=args.num_workers)
 
-dev_data_loader = DataLoader(
-    dataset=dev_dataset,
-    batch_size=batch_size * 2,
-    shuffle=True,
-    collate_fn=batchify_fn,
-    use_shared_memory=False,
-    num_workers=args.num_workers)
+dev_data_loader = DataLoader(dataset=dev_dataset,
+                             batch_size=batch_size * 2,
+                             shuffle=True,
+                             collate_fn=batchify_fn,
+                             use_shared_memory=False,
+                             num_workers=args.num_workers)
 
 epochs = args.epochs
 lr = args.lr
@@ -153,27 +157,15 @@ output_dir = args.output_dir
 best_valid_loss = None
 start_epoch = 0
 
-model = ProphetNetModel(
-    **ProphetNetModel.pretrained_init_configuration["prophetnet-large-uncased"])
-model = ProphetNetForConditionalGeneration(model)
+model = ProphetNetForConditionalGeneration.from_pretrained(
+    args.model_name_or_path)
 
 lr_scheduler = InverseSquareRootSchedule(warmup_init_lr, lr, warmup_steps)
 
-optimizer = paddle.optimizer.Adam(
-    learning_rate=lr_scheduler,
-    parameters=model.parameters(),
-    weight_decay=weight_decay,
-    grad_clip=paddle.nn.ClipGradByNorm(clip_norm))
-
-if os.path.exists(output_dir) and len(os.listdir(output_dir)) > 1:
-    ckpt_file_last = os.listdir(output_dir)[-2]
-    ckpt_load = paddle.load(os.path.join(output_dir, ckpt_file_last))
-    best_valid_loss = ckpt_load["best_valid_loss"]
-    start_epoch = ckpt_load["epoch"] + 1
-    optimizer.set_state_dict(ckpt_load["optimizer"])
-    model.load_dict(ckpt_load["model"])
-else:
-    model.load_dict(paddle.load(args.pretrained_model_path))
+optimizer = paddle.optimizer.Adam(learning_rate=lr_scheduler,
+                                  parameters=model.parameters(),
+                                  weight_decay=weight_decay,
+                                  grad_clip=paddle.nn.ClipGradByNorm(clip_norm))
 
 accumulate_batchs_num = int(32 * 16 / batch_size)
 
@@ -181,10 +173,10 @@ scaler = paddle.amp.GradScaler(init_loss_scaling=1024)
 
 
 def compute_loss(model, logits, labels, ignore_index=-100):
-    expend_targets = paddle.cast(
-        paddle.zeros((model.prophetnet.config["ngram"], labels.shape[0],
-                      labels.shape[1])).fill_(ignore_index),
-        dtype=paddle.int32)
+    expend_targets = paddle.cast(paddle.zeros(
+        (model.prophetnet.config["ngram"], labels.shape[0],
+         labels.shape[1])).fill_(ignore_index),
+                                 dtype=paddle.int32)
 
     for i in range(model.prophetnet.config["ngram"]):
         if i > 0 and model.prophetnet.disable_ngram_loss:
@@ -194,16 +186,18 @@ def compute_loss(model, logits, labels, ignore_index=-100):
     logits = logits.transpose([1, 0, 2, 3])
 
     if model.prophetnet.eps > 0.0:
-        expend_targets_mask = paddle.cast(
-            expend_targets != ignore_index, dtype=paddle.float32)
+        expend_targets_mask = paddle.cast(expend_targets != ignore_index,
+                                          dtype=paddle.float32)
         expend_targets = paddle.nn.functional.one_hot(
             expend_targets, num_classes=model.vocab_size)
         expend_targets = paddle.nn.functional.label_smooth(
             expend_targets, epsilon=model.prophetnet.eps)
-        loss = paddle.nn.functional.cross_entropy(
-            logits, expend_targets, soft_label=True, reduction='none').squeeze()
-        loss = paddle.sum(expend_targets_mask *
-                          loss) / expend_targets_mask.sum()
+        loss = paddle.nn.functional.cross_entropy(logits,
+                                                  expend_targets,
+                                                  soft_label=True,
+                                                  reduction='none').squeeze()
+        loss = paddle.sum(
+            expend_targets_mask * loss) / expend_targets_mask.sum()
     else:
         loss = paddle.nn.functional.cross_entropy(
             logits,
@@ -232,8 +226,10 @@ def valid(data):
                 attention_mask=src_attention_mask_ids,
                 decoder_input_ids=decoder_input_ids,
                 decoder_attention_mask=decoder_input_attention_mask_ids)
-            loss = compute_loss(
-                model, logits, label_ids, ignore_index=model.padding_idx)
+            loss = compute_loss(model,
+                                logits,
+                                label_ids,
+                                ignore_index=model.padding_idx)
             losses += loss.detach().numpy()
             bar.update(1)
     return losses / step
@@ -261,11 +257,10 @@ def train():
                         attention_mask=src_attention_mask_ids,
                         decoder_input_ids=decoder_input_ids,
                         decoder_attention_mask=decoder_input_attention_mask_ids)
-                    loss = compute_loss(
-                        model,
-                        logits,
-                        label_ids,
-                        ignore_index=model.padding_idx)
+                    loss = compute_loss(model,
+                                        logits,
+                                        label_ids,
+                                        ignore_index=model.padding_idx)
 
                 scaled = scaler.scale(loss)
                 scaled.backward()
@@ -284,37 +279,17 @@ def train():
         best_ckpt_path = os.path.join(output_dir, "model_best.pdparams")
         if best_valid_loss is None:
             best_valid_loss = valid_loss
-            save(best_ckpt_path, {
-                "model": model.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "epoch": epoch,
-                "best_valid_loss": best_valid_loss
-            })
+            model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
         else:
             if valid_loss < best_valid_loss:
                 best_valid_loss = valid_loss
-                save(best_ckpt_path, {
-                    "model": model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "epoch": epoch,
-                    "best_valid_loss": best_valid_loss
-                })
+                model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
         print("valid loss: %f, best valid loss: %f" %
               (valid_loss, best_valid_loss))
-        ckpt_path = os.path.join(output_dir, "model_%d.pdparams" % epoch)
-        save(ckpt_path, {
-            "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "epoch": epoch,
-            "best_valid_loss": best_valid_loss
-        })
-
-
-def save(path, obj):
-    if not os.path.exists(
-            os.path.abspath(os.path.dirname(path) + os.path.sep + ".")):
-        os.makedirs(os.path.abspath(os.path.dirname(path) + os.path.sep + "."))
-    paddle.save(obj, path)
+        model.save_pretrained(output_dir)
+        tokenizer.save_pretrained(output_dir)
 
 
 if __name__ == "__main__":

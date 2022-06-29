@@ -75,7 +75,17 @@ class ProphetNetTokenizer(PretrainedTokenizer):
     """
 
     resource_files_names = {"vocab_file": "prophetnet.tokenizer"}
-    pretrained_resource_files_map = {}
+    pretrained_resource_files_map = {
+        "vocab_file": {
+            "prophetnet-large-uncased":
+            "https://bj.bcebos.com/paddlenlp/models/transformers/prophetnet/prophetnet.tokenizer",
+        }
+    }
+    pretrained_init_configuration = {
+        "prophetnet-large-uncased": {
+            "do_lower_case": True
+        },
+    }
 
     def __init__(self,
                  vocab_file,
@@ -88,20 +98,22 @@ class ProphetNetTokenizer(PretrainedTokenizer):
                  cls_token="[CLS]",
                  x_sep_token="[X_SEP]",
                  pad_token="[PAD]",
-                 mask_token="[MASK]"):
+                 mask_token="[MASK]",
+                 **kwargs):
         self.unique_no_split_tokens = [
             x_sep_token, unk_token, sep_token, bos_token, eos_token, cls_token,
             pad_token, mask_token
         ]
         self.tokens_trie = create_trie(self.unique_no_split_tokens)
         self.vocab = load_vocab(vocab_file)
-        self.ids_to_tokens = collections.OrderedDict(
-            [(ids, tok) for tok, ids in self.vocab.items()])
+        self.ids_to_tokens = collections.OrderedDict([
+            (ids, tok) for tok, ids in self.vocab.items()
+        ])
         self.do_basic_tokenize = do_basic_tokenize
         if do_basic_tokenize:
             self.basic_tokenizer = BasicTokenizer(do_lower_case=do_lower_case)
-        self.wordpiece_tokenizer = WordpieceTokenizer(
-            vocab=self.vocab, unk_token=unk_token)
+        self.wordpiece_tokenizer = WordpieceTokenizer(vocab=self.vocab,
+                                                      unk_token=unk_token)
 
     @property
     def vocab_size(self):
@@ -271,7 +283,8 @@ class ProphetNetTokenizer(PretrainedTokenizer):
             return len(token_ids_0 + sep) * [0]
         return len(token_ids_0 + sep) * [0] + len(token_ids_1 + sep) * [1]
 
-    def build_inputs_with_special_tokens(self, token_ids_0,
+    def build_inputs_with_special_tokens(self,
+                                         token_ids_0,
                                          token_ids_1=None) -> List[int]:
         """
         Build model inputs from a sequence or a pair of sequence for sequence classification tasks by concatenating and
@@ -299,8 +312,8 @@ class ProphetNetTokenizer(PretrainedTokenizer):
         vocab_file = os.path.join(save_directory,
                                   self.resource_files_names["vocab_file"])
         with open(vocab_file, "w", encoding="utf-8") as writer:
-            for token, token_index in sorted(
-                    self.vocab.items(), key=lambda kv: kv[1]):
+            for token, token_index in sorted(self.vocab.items(),
+                                             key=lambda kv: kv[1]):
                 if index != token_index:
                     logging.warning(
                         f"Saving vocabulary to {vocab_file}: vocabulary indices are not consecutive."

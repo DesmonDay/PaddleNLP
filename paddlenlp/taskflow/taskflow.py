@@ -35,6 +35,7 @@ from .dependency_parsing import DDParserTask
 from .text_correction import CSCTask
 from .text_similarity import TextSimilarityTask
 from .dialogue import DialogueTask
+from .information_extraction import UIETask
 
 warnings.simplefilter(action='ignore', category=Warning, lineno=0, append=False)
 
@@ -218,7 +219,54 @@ TASKS = {
             "mode": "base"
         }
     },
+    'information_extraction': {
+        "models": {
+            "uie-base": {
+                "task_class": UIETask,
+                "hidden_size": 768,
+                "task_flag": "information_extraction-uie-base"
+            },
+            "uie-medium": {
+                "task_class": UIETask,
+                "hidden_size": 768,
+                "task_flag": "information_extraction-uie-medium"
+            },
+            "uie-mini": {
+                "task_class": UIETask,
+                "hidden_size": 384,
+                "task_flag": "information_extraction-uie-mini"
+            },
+            "uie-micro": {
+                "task_class": UIETask,
+                "hidden_size": 384,
+                "task_flag": "information_extraction-uie-micro"
+            },
+            "uie-nano": {
+                "task_class": UIETask,
+                "hidden_size": 312,
+                "task_flag": "information_extraction-uie-nano"
+            },
+            "uie-tiny": {
+                "task_class": UIETask,
+                "hidden_size": 768,
+                "task_flag": "information_extraction-uie-tiny"
+            },
+            "uie-medical-base": {
+                "task_class": UIETask,
+                "hidden_size": 768,
+                "task_flag": "information_extraction-uie-medical-base"
+            },
+        },
+        "default": {
+            "model": "uie-base"
+        }
+    }
 }
+
+support_schema_list = [
+    "uie-base", "uie-medium", "uie-mini", "uie-micro", "uie-nano", "uie-tiny",
+    "uie-medical-base", "wordtag"
+]
 
 
 class Taskflow(object):
@@ -253,13 +301,13 @@ class Taskflow(object):
 
         if self.model is not None:
             assert self.model in set(TASKS[task][tag].keys(
-            )), "The {} name:{} is not in task:[{}]".format(tag, model, task)
+            )), "The {} name: {} is not in task:[{}]".format(tag, model, task)
         else:
             self.model = TASKS[task]['default'][ind_tag]
 
         if "task_priority_path" in TASKS[self.task][tag][self.model]:
-            self.priority_path = TASKS[self.task][tag][self.model][
-                "task_priority_path"]
+            self.priority_path = TASKS[self.task][tag][
+                self.model]["task_priority_path"]
         else:
             self.priority_path = None
 
@@ -276,11 +324,10 @@ class Taskflow(object):
         kwargs.update(config_kwargs)
         self.kwargs = kwargs
         task_class = TASKS[self.task][tag][self.model]['task_class']
-        self.task_instance = task_class(
-            model=self.model,
-            task=self.task,
-            priority_path=self.priority_path,
-            **self.kwargs)
+        self.task_instance = task_class(model=self.model,
+                                        task=self.task,
+                                        priority_path=self.priority_path,
+                                        **self.kwargs)
         task_list = TASKS.keys()
         Taskflow.task_list = task_list
 
@@ -323,3 +370,7 @@ class Taskflow(object):
                     exit()
                 robot = self.task_instance(human)[0]
                 print("[Bot]:%s" % robot)
+
+    def set_schema(self, schema):
+        assert self.task_instance.model in support_schema_list, 'This method can only be used by the task with the model of uie or wordtag.'
+        self.task_instance.set_schema(schema)

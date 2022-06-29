@@ -31,6 +31,7 @@ try:
 except:
 
     class tqdm(object):
+
         def __init__(self, total=None, **kwargs):
             self.total = total
             self.n = 0
@@ -40,8 +41,8 @@ except:
             if self.total is None:
                 sys.stderr.write("\r{0:.1f} bytes".format(self.n))
             else:
-                sys.stderr.write("\r{0:.1f}%".format(100 * self.n / float(
-                    self.total)))
+                sys.stderr.write("\r{0:.1f}%".format(100 * self.n /
+                                                     float(self.total)))
             sys.stderr.flush()
 
         def __enter__(self):
@@ -56,10 +57,9 @@ from .log import logger
 __all__ = ['get_weights_path_from_url']
 
 COMMUNITY_MODEL_PREFIX = "https://bj.bcebos.com/paddlenlp/models/community/"
-
 WEIGHTS_HOME = osp.expanduser("~/.cache/paddle/hapi/weights")
-
 DOWNLOAD_RETRY_LIMIT = 3
+DOWNLOAD_CHECK = False
 
 nlp_models = OrderedDict((
     ('RoBERTa-zh-base',
@@ -97,7 +97,8 @@ nlp_models = OrderedDict((
     ('BERT-multilingual-cased-base',
      'https://bert-models.bj.bcebos.com/multi_cased_L-12_H-768_A-12.tar.gz'),
     ('BERT-zh-base',
-     'https://bert-models.bj.bcebos.com/chinese_L-12_H-768_A-12.tar.gz'), ))
+     'https://bert-models.bj.bcebos.com/chinese_L-12_H-768_A-12.tar.gz'),
+))
 
 
 def is_url(path):
@@ -206,11 +207,10 @@ def _download(url, path, md5sum=None):
         total_size = req.headers.get('content-length')
         with open(tmp_fullname, 'wb') as f:
             if total_size:
-                with tqdm(
-                        total=int(total_size),
-                        unit='B',
-                        unit_scale=True,
-                        unit_divisor=1024) as pbar:
+                with tqdm(total=int(total_size),
+                          unit='B',
+                          unit_scale=True,
+                          unit_divisor=1024) as pbar:
                     for chunk in req.iter_content(chunk_size=1024):
                         f.write(chunk)
                         pbar.update(len(chunk))
@@ -404,7 +404,9 @@ class DownloaderCheck(threading.Thread):
             extra.update({"addition": addition})
         try:
             import paddle
+            import paddlenlp
             payload['hub_version'] = " "
+            payload['ppnlp_version'] = paddlenlp.__version__
             payload['paddle_version'] = paddle.__version__.split('-')[0]
             payload['from'] = 'ppnlp'
             payload['extra'] = json.dumps(extra)
@@ -418,3 +420,14 @@ class DownloaderCheck(threading.Thread):
 
     def run(self):
         self.request_check(self.task, self.command, self.addition)
+
+
+def download_check(model_id, model_class, addition=None):
+    logger.disable()
+    global DOWNLOAD_CHECK
+    if not DOWNLOAD_CHECK:
+        DOWNLOAD_CHECK = True
+        checker = DownloaderCheck(model_id, model_class, addition)
+        checker.start()
+        checker.join()
+    logger.enable()
