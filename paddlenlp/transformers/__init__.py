@@ -122,6 +122,7 @@ from .funnel.tokenizer import *
 from .funnel.configuration import *
 from .llama.configuration import *
 from .llama.modeling import *
+from .llama.modeling_rm import *
 from .llama.tokenizer import *
 from .layoutlm.configuration import *
 from .layoutlm.modeling import *
