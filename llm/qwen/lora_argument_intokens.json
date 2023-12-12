@@ -2,8 +2,8 @@
     "model_name_or_path": "qwen/qwen-7b",
     "dataset_name_or_path": "./dasou_data",
     "output_dir": "./checkpoints/qwen_lora_ckpts_test",
-    "per_device_train_batch_size": 8,
-    "gradient_accumulation_steps": 16,
+    "per_device_train_batch_size": 1,
+    "gradient_accumulation_steps": 64,
     "per_device_eval_batch_size": 8,
     "eval_accumulation_steps": 16,
     "num_train_epochs": 10,
@@ -13,7 +13,7 @@
     "evaluation_strategy": "no",
     "save_strategy": "steps",
     "save_steps": 100,
-    "src_length": 2048,
+    "src_length": 1024,
     "max_length": 2560,
     "bf16": true,
     "fp16_opt_level": "O2",
@@ -23,8 +23,8 @@
     "load_best_model_at_end": false,
     "eval_with_do_generation": false,
     "metric_for_best_model": "accuracy",
-    "recompute": true,
-    "recompute_granularity": "core_attn",
+    "recompute": false,
+    "recompute_granularity": "full",
     "save_total_limit": 2,
     "tensor_parallel_degree": 1,
     "pipeline_parallel_degree": 1,
@@ -32,5 +32,6 @@
     "lr_scheduler_type": "cosine",
     "use_flash_attention": true,
     "lora_rank": 16,
-    "chat_template": "chat_template.json"
+    "chat_template": "chat_template.json",
+    "intokens": true
   }

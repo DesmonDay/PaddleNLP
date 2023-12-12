@@ -1,0 +1,5 @@
+{
+    "system": "<|im_start|>system\nYou are a helpful assistant.<|im_end|>",
+    "conversation": ["\n<|im_start|>user\n{{user}}<|im_end|>\n<|im_start|>assistant\n", "{{bot}}<|endoftext|>"],
+    "query": "\n<|im_start|>user\n{{query}}<|im_end|>\n<|im_start|>assistant\n"
+}

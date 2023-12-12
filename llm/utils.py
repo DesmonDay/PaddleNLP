@@ -138,10 +138,10 @@ def get_lora_target_modules(model):
     elif model.base_model_prefix == "qwen":
         target_modules = [
             ".*attn.c_attn.*",
-            ".*attn.c_proj.*",
-            ".*mlp.w1.*",
-            ".*mlp.w2.*",
-            ".*mlp.c_proj.*",
+            # ".*attn.c_proj.*",
+            # ".*mlp.w1.*",
+            # ".*mlp.w2.*",
+            # ".*mlp.c_proj.*",
         ]
     else:
         raise ValueError(f"Unknown base_model_prefix: {model.base_model_prefix}.")
