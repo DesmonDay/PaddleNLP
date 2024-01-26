@@ -747,6 +747,10 @@ class TrainingArguments:
         default=False,
         metadata={"help": "reshard pp even if pp degree in the model and pp degree in script match"},
     )
+    use_moe: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Whether to train moe."},
+    )
 
     def __post_init__(self):
         env_local_rank = int(os.environ.get("PADDLE_RANK_IN_NODE", -1))

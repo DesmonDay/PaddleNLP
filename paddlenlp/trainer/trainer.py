@@ -49,6 +49,7 @@ from paddle.distributed.fleet.meta_optimizers.dygraph_optimizer.hybrid_parallel_
 from paddle.distributed.fleet.meta_parallel.sharding.group_sharded_optimizer_stage2 import (
     GroupShardedOptimizerStage2,
 )
+from paddle.utils import map_structure
 
 try:
     from paddle.distributed.fleet.utils.hybrid_parallel_util import (
@@ -828,7 +829,7 @@ class Trainer:
 
         self.control = self.callback_handler.on_train_begin(args, self.state, self.control)
 
-        tr_loss = paddle.to_tensor(0.0)
+        tr_loss = None
         self._total_loss_scalar = 0.0
         self._globalstep_last_logged = self.state.global_step
 
@@ -916,7 +917,10 @@ class Trainer:
                 else:
                     tr_loss_step = self.training_step(model, inputs)
 
-                tr_loss += tr_loss_step
+                if tr_loss_step is not None:
+                    if tr_loss is None:
+                        tr_loss = map_structure(lambda x: paddle.zeros_like(x), tr_loss_step)
+                    map_structure(lambda x, y: x.add_(y), tr_loss, tr_loss_step)
 
                 if (step_control + 1) % args.gradient_accumulation_steps == 0 or (
                     # last step in epoch but step is always smaller than gradient_accumulation_steps
@@ -1175,12 +1179,23 @@ class Trainer:
             logs: Dict[str, float] = {}
 
             # all_gather + mean() to get average loss over all processes
-            tr_loss_scalar = self._nested_gather(tr_loss).mean().item()
+            tr_loss_scalar = map_structure(lambda x: self._nested_gather(x).mean().item(), tr_loss)
 
             # reset tr_loss to zero
-            tr_loss.subtract_(tr_loss)
+            map_structure(lambda x: x.zero_(), tr_loss)
 
-            logs["loss"] = round(tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 8)
+            if isinstance(tr_loss_scalar, dict):
+                for k, v in tr_loss_scalar.items():
+                    logs[k] = round(v / (self.state.global_step - self._globalstep_last_logged), 8)
+            elif isinstance(tr_loss_scalar, (list, tuple)):
+                for i, v in enumerate(tr_loss_scalar):
+                    logs[f"loss_{i}"] = round(v / (self.state.global_step - self._globalstep_last_logged), 8)
+            else:
+                logs["loss"] = round(
+                    tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged),
+                    8,
+                )
+
             logs["learning_rate"] = float("{0:.3e}".format(self._get_learning_rate()))
             logs["global_step"] = int(self.state.global_step)
 
@@ -1197,7 +1212,9 @@ class Trainer:
                 )
             )
 
-            self._total_loss_scalar += tr_loss_scalar
+            self._total_loss_scalar += (
+                tr_loss_scalar.pop("loss") if isinstance(tr_loss_scalar, dict) else tr_loss_scalar
+            )
             self._globalstep_last_logged = self.state.global_step
             self._globalstep_last_start_time = time.time()
 
@@ -1945,16 +1962,21 @@ class Trainer:
 
         with self.autocast_smart_context_manager():
             loss = self.compute_loss(model, inputs)
-
         if self.args.gradient_accumulation_steps > 1 and not self._enable_delay_scale_loss():
-            loss = loss / self.args.gradient_accumulation_steps
+            # loss = loss / self.args.gradient_accumulation_steps
+            loss = map_structure(lambda x: x / self.args.gradient_accumulation_steps, loss)
+
+        if isinstance(loss, dict):
+            total_loss = loss["loss"]
+        else:
+            total_loss = loss
 
         if self.do_grad_scaling:
-            self.scaler.scale(loss).backward()
+            self.scaler.scale(total_loss).backward()
         else:
-            loss.backward()
+            total_loss.backward()
 
-        return loss.detach()
+        return map_structure(lambda v: v.detach(), loss)
 
     def training_pipeline_step(self, model: nn.Layer, inputs: Dict[str, Union[paddle.Tensor, Any]]) -> paddle.Tensor:
         """
