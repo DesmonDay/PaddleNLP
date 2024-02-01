@@ -27,6 +27,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 import paddle
+import paddle.distributed as dist
 from paddle.distributed import fleet
 
 from ..utils.log import logger
@@ -319,8 +320,11 @@ class TrainingArguments:
             than computing them on train startup. Ignored unless `group_by_length` is `True` and the dataset is an
             instance of `Dataset`.
         report_to (`str` or `List[str]`, *optional*, defaults to `"visualdl"`):
-            The list of integrations to report the results and logs to. Supported platforms is `"visualdl"`.
+            The list of integrations to report the results and logs to.
+            Supported platforms are `"visualdl"`/`"wandb"`/`"tensorboard"`.
             `"none"` for no integrations.
+        wandb_api_key (`str`, *optional*):
+            Weights & Biases (WandB) API key(s) for authentication with the WandB service.
         resume_from_checkpoint (`str`, *optional*):
             The path to a folder with a valid checkpoint for your model. This argument is not directly used by
             [`Trainer`], it's intended to be used by your training/evaluation scripts instead. See the [example
@@ -695,6 +699,10 @@ class TrainingArguments:
     report_to: Optional[List[str]] = field(
         default=None, metadata={"help": "The list of integrations to report the results and logs to."}
     )
+    wandb_api_key: Optional[str] = field(
+        default=None,
+        metadata={"help": "Weights & Biases (WandB) API key(s) for authentication with the WandB service."},
+    )
     resume_from_checkpoint: Optional[str] = field(
         default=None,
         metadata={"help": "The path to a folder with a valid checkpoint for your model."},
@@ -723,7 +731,7 @@ class TrainingArguments:
     )
     to_static: Optional[bool] = field(
         default=False,
-        metadata={"help": "Enable training under @to_static."},
+        metadata={"help": ("Whether to train model under static mode by jit.to_static or distributed.to_static.")},
     )
     unified_checkpoint_config: Optional[str] = field(
         default="",
@@ -750,6 +758,9 @@ class TrainingArguments:
     use_moe: Optional[bool] = field(
         default=False,
         metadata={"help": "Whether to train moe."},
+    enable_auto_parallel: Optional[bool] = field(
+        default=False,
+        metadata={"help": "whether to run distributed training in auto parallel mode"},
     )
 
     def __post_init__(self):
@@ -838,7 +849,6 @@ class TrainingArguments:
         self.optim = OptimizerNames(self.optim)
 
         self.use_hybrid_parallel = False
-        self.use_auto_parallel = False
 
         if isinstance(self.sharding, bool):
             self.sharding = "stage1" if self.sharding else ""
@@ -861,13 +871,9 @@ class TrainingArguments:
         if len(self.sharding) == 0 and self.sharding_parallel_degree > 0:
             warnings.warn("`--sharding_parallel_degree` is useful only when `--sharding` is specified.")
 
-        try:
-            self.use_auto_parallel = self.parallel_mode == "auto"
-        except:
-            pass
+        world_size = paddle.distributed.get_world_size()
 
-        if paddle.distributed.get_world_size() > 1:
-            world_size = paddle.distributed.get_world_size()
+        if world_size > 1:
             tensor_parallel_degree = max(self.tensor_parallel_degree, 1)
             sep_parallel_degree = max(self.sep_parallel_degree, 1)
             pipeline_parallel_degree = max(self.pipeline_parallel_degree, 1)
@@ -910,8 +916,15 @@ class TrainingArguments:
                 self.pipeline_parallel_degree = -1
                 self.sep_parallel_degree = -1
 
-        if self.use_hybrid_parallel and self.use_auto_parallel:
+        if self.use_hybrid_parallel and self.enable_auto_parallel:
             self.use_hybrid_parallel = False
+
+        if self.to_static:
+            assert world_size == 1 or self.enable_auto_parallel, (
+                "It's not supported for training in static mode except the following cases : "
+                "1. world_size == 1, which means single-card training while no parallelism is used; "
+                "2. enable_auto_parallel is set to True, which means the training will be executed in static mode of auto parallel."
+            )
 
         if self.distributed_dataloader and not (self.tensor_parallel_degree > 1 or self.pipeline_parallel_degree > 1):
             warnings.warn("We set `distributed_dataloader` to False if tp_degree <= 1 and pp_degree <= 1")
@@ -924,7 +937,6 @@ class TrainingArguments:
 
         # use_hybrid_parallel
         if self.use_hybrid_parallel:
-            world_size = paddle.distributed.get_world_size()
 
             if ShardingOption.OFFLOAD in self.sharding:
                 warnings.warn("`offload` is not supported NOW!")
@@ -1129,8 +1141,7 @@ class TrainingArguments:
                 fleet.init(is_collective=True, strategy=strategy)
                 logger.info(strategy)
 
-        elif self.use_auto_parallel:
-            world_size = paddle.distributed.get_world_size()
+        elif self.enable_auto_parallel:
             self.tensor_parallel_degree = max(self.tensor_parallel_degree, 1)
             self.pipeline_parallel_degree = max(self.pipeline_parallel_degree, 1)
 
@@ -1144,8 +1155,8 @@ class TrainingArguments:
                 if len(self.sharding) > 0:
                     self.sharding_parallel_degree = self.data_parallel_degree
 
-            sharding_parallel_degree = max(self.sharding_parallel_degree, 1)
-            if sharding_parallel_degree == 1 and len(self.sharding) > 0:
+            self.sharding_parallel_degree = max(self.sharding_parallel_degree, 1)
+            if self.sharding_parallel_degree == 1 and len(self.sharding) > 0:
                 logger.warning("sharding_parallel_degree=1 means no sharding, please set sharding to empty!")
                 self.sharding = []
 
@@ -1227,10 +1238,10 @@ class TrainingArguments:
                         "by current version of Paddle. Please try latest develop Paddle."
                     )
 
-            if sharding_parallel_degree > 1:
+            if self.sharding_parallel_degree > 1:
                 sharding = strategy.sharding
                 sharding.enable = True
-                sharding.degree = sharding_parallel_degree
+                sharding.degree = self.sharding_parallel_degree
                 if ShardingOption.SHARD_OP in self.sharding:
                     sharding.stage = 1
                 elif ShardingOption.SHARD_GRAD_OP in self.sharding:
@@ -1278,12 +1289,19 @@ class TrainingArguments:
             self.strategy = strategy
             order = ["dp", "pp", "mp"]
             degree = [self.data_parallel_degree, self.pipeline_parallel_degree, self.tensor_parallel_degree]
-            mesh_dims = list(filter(lambda x: x[1] > 1, list(zip(order, degree))))
-            if not mesh_dims:
-                mesh_dims = [("dp", 1)]
+            mesh_dims = list(zip(order, degree))
             fleet.auto.create_mesh(mesh_dims)
+
+            # init hcg for communication in trainer
+            strategy = fleet.DistributedStrategy()
+            strategy.hybrid_configs = {
+                "dp_degree": self.data_parallel_degree,
+                "mp_degree": self.tensor_parallel_degree,
+                "pp_degree": self.pipeline_parallel_degree,
+            }
+            fleet.init(is_collective=True, strategy=strategy)
+
         else:
-            world_size = paddle.distributed.get_world_size()
             if world_size > 1:
                 if not paddle.distributed.parallel.parallel_helper._is_parallel_ctx_initialized():
                     if self.unified_checkpoint:
@@ -1322,7 +1340,7 @@ class TrainingArguments:
                 "integrations to none). In v5, you will need to use `--report_to all` to get the same behavior as "
                 "now. You should start updating your code and make this info disappear :-)."
             )
-            self.report_to = "all"
+            self.report_to = "visualdl"
         if self.report_to == "all" or self.report_to == ["all"]:
             # Import at runtime to avoid a circular import.
             from .integrations import get_available_reporting_integrations
@@ -1397,6 +1415,9 @@ class TrainingArguments:
             if dp_group.rank == -1:
                 return 0
             return dp_group.rank
+        elif self.enable_auto_parallel:
+            mesh = fleet.auto.get_mesh()
+            return mesh.get_rank_by_dim_and_process_id("dp", dist.get_rank())
         else:
             return paddle.distributed.get_rank()
 
@@ -1404,7 +1425,7 @@ class TrainingArguments:
     def dataset_rank(self):
         if self.use_hybrid_parallel:
             return max(self.sharding_parallel_degree, 1) * self.data_parallel_rank + self.sharding_parallel_rank
-        elif self.use_auto_parallel:
+        elif self.enable_auto_parallel:
             return self.data_parallel_rank
         else:
             return paddle.distributed.get_rank()
@@ -1413,7 +1434,7 @@ class TrainingArguments:
     def dataset_world_size(self):
         if self.use_hybrid_parallel:
             return max(self.sharding_parallel_degree, 1) * max(self.data_parallel_degree, 1)
-        elif self.use_auto_parallel:
+        elif self.enable_auto_parallel:
             return max(self.data_parallel_degree, 1)
         else:
             return paddle.distributed.get_world_size()
@@ -1433,6 +1454,9 @@ class TrainingArguments:
             hcg = fleet.get_hybrid_communicate_group()
             tp_group = hcg.get_model_parallel_group()
             return max(tp_group.rank, 0)
+        elif self.enable_auto_parallel:
+            mesh = fleet.auto.get_mesh()
+            return mesh.get_rank_by_dim_and_process_id("mp", dist.get_rank())
         else:
             return 0
 
@@ -1442,6 +1466,9 @@ class TrainingArguments:
             hcg = fleet.get_hybrid_communicate_group()
             rank = hcg.get_stage_id()
             return max(rank, 0)
+        elif self.enable_auto_parallel:
+            mesh = fleet.auto.get_mesh()
+            return mesh.get_rank_by_dim_and_process_id("pp", dist.get_rank())
         else:
             return 0
 
@@ -1545,7 +1572,9 @@ class TrainingArguments:
         """
         Whether or not the current process should produce log.
         """
-        if self.log_on_each_node:
+        if self.enable_auto_parallel:
+            return True
+        elif self.log_on_each_node:
             return self.local_process_index == 0
         else:
             return self.process_index == 0
@@ -1564,6 +1593,8 @@ class TrainingArguments:
         if self.save_on_each_node:
             return self.local_process_index == 0
         else:
+            if self.enable_auto_parallel:
+                return True
             return self.process_index == 0
 
     @property
@@ -1582,6 +1613,8 @@ class TrainingArguments:
         else:
             if self.should_save_sharding_stage1_model:
                 return True
+            elif self.enable_auto_parallel:
+                return True
             elif self.use_hybrid_parallel:
                 # save on dataset rank 0
                 return self.sharding_parallel_rank == 0 and self.data_parallel_rank == 0
@@ -1597,12 +1630,16 @@ class TrainingArguments:
 
     @property
     def should_save_sharding_stage1_model(self):
+        if self.enable_auto_parallel:
+            return False
         return (
             ShardingOption.SHARD_OP in self.sharding and self.sharding_parallel_degree > 1 and self.save_sharded_model
         )
 
     @property
     def should_load_sharding_stage1_model(self):
+        if self.enable_auto_parallel:
+            return False
         return (
             ShardingOption.SHARD_OP in self.sharding and self.sharding_parallel_degree > 1 and self.load_sharded_model
         )
@@ -1706,21 +1743,21 @@ class TrainingArguments:
         """
         print all config values.
         """
-        logger.info("=" * 60)
+        logger.debug("=" * 60)
         if args is None:
             args = self
             key = "Training"
 
         import paddlenlp
 
-        logger.info("{:^40}".format("{} Configuration Arguments".format(key)))
-        logger.info("{:30}: {}".format("paddle commit id", paddle.version.commit))
-        logger.info("{:30}: {}".format("paddlenlp commit id", paddlenlp.version.commit))
+        logger.debug("{:^40}".format("{} Configuration Arguments".format(key)))
+        logger.debug("{:30}: {}".format("paddle commit id", paddle.version.commit))
+        logger.debug("{:30}: {}".format("paddlenlp commit id", paddlenlp.version.commit))
 
         for a in dir(args):
             if a[:2] != "__":  # don't print double underscore methods
                 v = getattr(args, a)
                 if not isinstance(v, types.MethodType):
-                    logger.info("{:30}: {}".format(a, v))
+                    logger.debug("{:30}: {}".format(a, v))
 
-        logger.info("")
+        logger.debug("")
