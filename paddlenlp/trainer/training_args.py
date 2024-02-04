@@ -758,6 +758,7 @@ class TrainingArguments:
     use_moe: Optional[bool] = field(
         default=False,
         metadata={"help": "Whether to train moe."},
+    )
     enable_auto_parallel: Optional[bool] = field(
         default=False,
         metadata={"help": "whether to run distributed training in auto parallel mode"},

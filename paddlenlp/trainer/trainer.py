@@ -878,6 +878,15 @@ class Trainer:
 
         self.timers and self.timers("read-data").start()
 
+        # save_dict = {}
+        # for step, inputs in enumerate(epoch_iterator):
+        #    save_dict[step] = inputs
+        #    if step == 10000:
+        #        break
+        # paddle.save(save_dict, "./input_data.pkl")
+        # raise ValueError
+        # input_data = paddle.load("./input_data.pkl")
+
         for epoch in range(epochs_trained, num_train_epochs):
             if isinstance(train_dataloader, paddle.io.DataLoader) and isinstance(
                 train_dataloader.batch_sampler, DistributedBatchSampler
@@ -888,6 +897,9 @@ class Trainer:
             self.control = self.callback_handler.on_epoch_begin(args, self.state, self.control)
 
             for step, inputs in enumerate(epoch_iterator):
+                # for step, inputs in input_data.items():
+                #    _ = inputs.pop("loss_mask")
+
                 if self.args.use_hybrid_parallel and self.args.sep_parallel_degree > 1:
                     inputs = split_inputs_sequence_dim(inputs)
                 self.timers and self.timers("read-data").stop()
@@ -1113,7 +1125,7 @@ class Trainer:
                         "on multiple nodes, you should activate `--save_on_each_node`."
                     )
 
-        self._total_loss_scalar += tr_loss.item()
+        self._total_loss_scalar += tr_loss.pop("loss").item() if isinstance(tr_loss, dict) else tr_loss.item()
         train_loss = self._total_loss_scalar / self.state.global_step
 
         metrics = speed_metrics("train", start_time, num_samples=num_train_samples, num_steps=self.state.max_steps)
@@ -1221,7 +1233,7 @@ class Trainer:
             logs: Dict[str, float] = {}
 
             # all_gather + mean() to get average loss over all processes
-            tr_loss_scalar = map_structure(lambda x: self._get_item_from_loss(self._nested_gather(x).mean().item()), tr_loss)
+            tr_loss_scalar = map_structure(lambda x: self._get_item_from_loss(self._nested_gather(x).mean()), tr_loss)
 
             # reset tr_loss to zero
             map_structure(lambda x: x.zero_(), tr_loss)
@@ -2046,7 +2058,7 @@ class Trainer:
             self._pp_data_buffer = []
         self._pp_data_buffer.append(inputs)
         if len(self._pp_data_buffer) != self.args.gradient_accumulation_steps:
-            return paddle.zeros([])
+            return None
 
         # for v in self._pp_data_buffer[0].values():
         #     assert isinstance(v, paddle.Tensor), f"Only support tensor as pipeline mode input, got type {type(v)}"
@@ -2077,8 +2089,29 @@ class Trainer:
             loss = model.forward_backward_pipeline(inputs, self.scaler if self.do_grad_scaling else None)
 
         model.micro_batch_size, model.accumulate_steps = config_backup
+        if not hasattr(model._layers._loss_fn, "info"):
+            return loss.detach()
 
-        return loss.detach()
+        if model.is_pipeline_last_stage():
+            buf = [
+                map_structure(
+                    lambda v: (v.item() if isinstance(v, paddle.Tensor) else v)
+                    / self.args.gradient_accumulation_steps,
+                    model._layers._loss_fn.info,
+                )
+            ]
+        else:
+            buf = [None]
+
+        hcg = fleet.get_hybrid_communicate_group()
+        dist.broadcast_object_list(buf, src=hcg._pp_comm_group.ranks[-1], group=hcg.get_pipe_parallel_group())
+        losses = buf[0]
+
+        # when pipeline model need to return and print multiple loss, we need to insert dict `info` into `model._layers._loss_fn`
+        model._layers._loss_fn.info = {}
+        assert isinstance(losses, dict), f"expect info to dict, got {type(losses)}"
+        losses = map_structure(lambda v: paddle.to_tensor(v), losses)
+        return losses
 
     def save_model(self, output_dir: Optional[str] = None, merge_tensor_parallel: Optional[bool] = False):
         """
