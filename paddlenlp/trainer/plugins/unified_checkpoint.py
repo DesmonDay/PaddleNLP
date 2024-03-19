@@ -903,7 +903,7 @@ def save_single_card_checkpoint(args, model_to_save, output_dir):
     elif isinstance(model_to_save, PrefixModelForCausalLM):
         sharded_index_json["type"] = "ptuning"
 
-    os.makedirs(output_dir, exis_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, index_filename)
     with open(path, "w") as f:
         json.dump(sharded_index_json, f, indent=4)
