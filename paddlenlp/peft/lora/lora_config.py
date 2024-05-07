@@ -148,6 +148,7 @@ class LoRAConfig:
 
         loaded_attributes = cls.from_json_file(config_file)
         loaded_attributes.pop("scaling", None)
+
         config = cls(**kwargs)
 
         for key, value in loaded_attributes.items():

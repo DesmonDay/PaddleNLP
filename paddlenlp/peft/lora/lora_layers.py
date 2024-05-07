@@ -33,16 +33,7 @@ try:
         mark_as_sequence_parallel_parameter,
     )
 except:
-    AllGatherOp = None
-    ReduceScatterOp = None
-    mark_as_sequence_parallel_parameter = None
-
-    class ColumnSequenceParallelLinear:
-        pass
-
-    class RowSequenceParallelLinear:
-        pass
-
+    pass
 
 from paddlenlp.transformers.mc2_parallel_linear import (
     MC2ColumnParallelCoreLinear,
@@ -539,7 +530,7 @@ class ColumnParallelLoRALinear(ColumnParallelLinear):
                 result_mp = F.linear(x=input_mp, weight=self.weight, bias=self.bias, name=self.name)
             else:
                 res_mp = MC2ColumnParallelCoreLinear.apply(input, self.weight, self.model_parallel_group)
-                result_mp = res_mp + self.bias
+                result_mp = (res_mp + self.bias) if self.bias is not None else res_mp
 
             if not self.merged:
                 input_a = self.lora_dropout(input) @ self.lora_A
