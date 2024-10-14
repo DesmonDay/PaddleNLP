@@ -24,7 +24,7 @@ from threading import Thread
 import numpy as np
 import paddle
 import paddle.incubate.multiprocessing as mp
-from paddle.base.framework import in_cinn_mode, in_pir_executor_mode
+from paddle.base.framework import in_cinn_mode, in_pir_executor_mode, use_pir_api
 from paddle.distributed import fleet
 
 from paddlenlp.generation import GenerationConfig, TextIteratorStreamer
@@ -624,8 +624,10 @@ class StaticInferencePredictor(InferencePredictorMixin):
         infer_model_path = llm_utils.get_infer_model_path(
             predictor_args.model_name_or_path, predictor_args.model_prefix
         )
-
-        config = paddle.inference.Config(infer_model_path + ".pdmodel", infer_model_path + ".pdiparams")
+        if use_pir_api():
+            config = paddle.inference.Config(infer_model_path + ".json", infer_model_path + ".pdiparams")
+        else:
+            config = paddle.inference.Config(infer_model_path + ".pdmodel", infer_model_path + ".pdiparams")
 
         config.switch_ir_optim(True)
         # remove `gpu_cpu_map_matmul_v2_to_matmul_pass` to avoid mapping matmul_v2 -> matmul op
@@ -886,12 +888,8 @@ class BlockInferencePredictorMixin(BasePredictor):
                 ]
             )
             # self.model_inputs["src_mask/tgt_mask"] is read only, will not be updated!
-            src_mask = (
-                alibi_encoder + (1 - src_mask) * paddle.finfo(self.dtype).min
-            ).cast(self.dtype)
-            tgt_mask = (
-                alibi_decoder + (1 - tgt_mask) * paddle.finfo(self.dtype).min
-            ).cast(self.dtype)
+            src_mask = (alibi_encoder + (1 - src_mask) * paddle.finfo(self.dtype).min).cast(self.dtype)
+            tgt_mask = (alibi_decoder + (1 - tgt_mask) * paddle.finfo(self.dtype).min).cast(self.dtype)
             self.model_inputs["rope_emb"] = paddle.concat([src_mask.reshape([-1]), tgt_mask.reshape([-1])])
 
     def _preprocess(self, input_text: list[str]):
@@ -993,7 +991,8 @@ class DygraphBlockInferencePredictor(BlockInferencePredictorMixin):
 
         output_tensor = paddle.full(shape=[MAX_BSZ + 2, 1], fill_value=2, dtype="int64").cpu()
         tensor_queue.put(output_tensor)
-        done_event.wait()
+        if self.tensor_parallel_rank == 0:
+            done_event.wait()
         s_time = time.time()
         while self.model_inputs["not_need_stop"]:
             self._infer(self.model_inputs)
@@ -1060,7 +1059,10 @@ class StaticBlockInferencePredictor(BlockInferencePredictorMixin):
             predictor_args.model_name_or_path, predictor_args.model_prefix
         )
 
-        config = paddle.inference.Config(infer_model_path + ".pdmodel", infer_model_path + ".pdiparams")
+        if use_pir_api():
+            config = paddle.inference.Config(infer_model_path + ".json", infer_model_path + ".pdiparams")
+        else:
+            config = paddle.inference.Config(infer_model_path + ".pdmodel", infer_model_path + ".pdiparams")
 
         config.switch_ir_optim(False)
         if predictor_args.device in paddle.device.get_all_custom_device_type():
@@ -1119,7 +1121,8 @@ class StaticBlockInferencePredictor(BlockInferencePredictorMixin):
             read_res_process.start()
         output_tensor = paddle.full(shape=[MAX_BSZ + 2, 1], fill_value=2, dtype="int64").cpu()
         tensor_queue.put(output_tensor)
-        done_event.wait()
+        if self.tensor_parallel_rank == 0:
+            done_event.wait()
         s_time = time.time()
         while self.model_inputs["not_need_stop"]:
             self.predictor.run(list(self.model_inputs.values()))
