@@ -2372,7 +2372,11 @@ class Trainer:
         elif isinstance(self.model, LoRAModel) or isinstance(self.model, PrefixModelForCausalLM):
             self.save_model(output_dir, True, signal_dir)
         else:
-            self.save_model(output_dir, False, signal_dir)
+            signature = inspect.signature(self.save_model)
+            if "signal_dir" in signature.parameters:
+                self.save_model(output_dir, False, signal_dir)
+            else:
+                self.save_model(output_dir)
 
         # only save model state dict, ignore optimizer and scheduler
         if not self.args.ignore_save_lr_and_optim:
